@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>GRAMMARBLITZ</title>
+<link rel="stylesheet" href="style.css">
+
+<style>
+body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+
+/* SCREENS */
+.screen{display:none;flex-direction:column;flex:1;overflow:hidden}
+.screen.active{display:flex}
+
+/* GAME LAYOUT */
+#game{padding:0;align-items:stretch;justify-content:flex-start}
+
+/* OPTION ANIMATION */
+.opt-btn{
+  opacity:0;
+  transform:translateY(10px);
+  animation:optIn 0.25s ease forwards;
+  color:var(--text);
+  font-family:var(--mono);
+}
+.opt-btn:nth-child(1){animation-delay:0.05s}
+.opt-btn:nth-child(2){animation-delay:0.1s}
+.opt-btn:nth-child(3){animation-delay:0.15s}
+.opt-btn:nth-child(4){animation-delay:0.2s}
+
+@keyframes optIn{
+  from{opacity:0; transform:translateY(10px);}
+  to{opacity:1; transform:translateY(0);}
+}
+
+/* SCREEN SHAKE */
+body.shake{
+  animation:screenShake 0.25s;
+}
+@keyframes screenShake{
+  0%,100%{transform:translate(0,0)}
+  25%{transform:translate(-6px,2px)}
+  50%{transform:translate(6px,-2px)}
+  75%{transform:translate(-4px,1px)}
+}
+
+/* PANIC MODE */
+body.panic{
+  box-shadow:inset 0 0 40px rgba(255,0,0,0.4);
+}
+</style>
+</head>
+
+<body>
+
+<div class="screen active" id="game"></div>
+
+<script type="module">
+import {
+  CHARS, getRound, updateStats, getDiagnosis, levenshtein, getToneSequence,
+  playClick, playCorrect, playWrong,
+  playStreak, playTimeout, playGameOver,
+  startTheme, stopTheme, setTempo,
+  buildGameScreen, buildFeedbackLayer,
+  flashFeedback, showStreak,
+  renderOptions, setQTag,
+  startTimer, updateLives, S
+} from './shared.js';
+
+// ── TYPE EFFECT ───────────────────────────────────────────
+function typeSentence(el, html, speed=14){
+  el.innerHTML = '';
+  let i = 0;
+
+  function step(){
+    el.innerHTML = html.slice(0,i);
+    i++;
+    if(i <= html.length) setTimeout(step, speed);
+  }
+  step();
+}
+
+// ── INIT ──────────────────────────────────────────────────
+buildGameScreen(document.getElementById('game'), 'solo');
+buildFeedbackLayer();
+
+// Start music on first touch (browser autoplay policy)
+let musicStarted = false;
+document.addEventListener('pointerdown', () => {
+  if(!musicStarted){ startTheme(); musicStarted = true; }
+}, { once: true });
+
+const mode = new URLSearchParams(location.search).get('mode') || 'modals';
+const char = mode === 'tenses' ? CHARS.owlbert
+           : mode === 'mixed'  ? (Math.random()>0.5 ? CHARS.rex : CHARS.owlbert)
+           : CHARS.rex;
+let questions = getRound(mode);
+
+// Attach tone lines to questions
+const toneSeq = getToneSequence();
+questions.forEach((q, i) => {
+  const t = toneSeq[Math.min(i, toneSeq.length-1)];
+  q._tone = t.tone;
+  q._line = t.line;
+});
+
+let qIdx=0, score=0, streak=0, lives=3;
+let answered=false;
+let timerInt=null;
+
+// ── RENDER ───────────────────────────────────────────────
+function renderQ(){
+  const q = questions[qIdx];
+  answered=false;
+  const isWrite = !!q._forceWrite;
+
+  // Reset next button
+  document.getElementById('nextBtn')?.classList.remove('show');
+
+  // Reset write mode state
+  const wi = document.getElementById('writeInput');
+  if(wi){ wi.disabled = false; wi.value = ''; }
+  const cr = document.getElementById('correctReveal');
+  if(cr){ cr.textContent = ''; cr.className = 'correct-reveal'; }
+
+  document.getElementById('qCounter').textContent = `Q ${qIdx+1} / ${questions.length}`;
+  document.getElementById('progressFill').style.width = `${(qIdx/questions.length)*100}%`;
+  setQTag(q.tag);
+
+  const html = q.sentence.replace('___',`<span class="gap" id="gapSpan">___</span>`);
+  typeSentence(document.getElementById('sentenceBox'), html);
+
+  document.getElementById('hintTxt').textContent = q.hint || '';
+  document.getElementById('expl').className='expl';
+
+  // Transmission line
+  const tx = document.getElementById('transmission');
+  if(tx) tx.textContent = q._line || '';
+
+  setChar('idle');
+
+  // Show options OR write mode
+  const optGrid = document.getElementById('optGrid');
+  const writeArea = document.getElementById('writeArea');
+
+  if(isWrite && writeArea){
+    if(optGrid) optGrid.style.display='none';
+    writeArea.style.display='flex';
+    const inp = document.getElementById('writeInput');
+    if(inp){ inp.value=''; inp.focus(); }
+    const sub = document.getElementById('writeSubmit');
+    if(sub){
+      sub.onclick = () => {
+        const val = (document.getElementById('writeInput')?.value||'').trim().toLowerCase();
+        const ok = val === q.answer.toLowerCase()
+          || (typeof levenshtein !== 'undefined' && levenshtein(val, q.answer.toLowerCase()) <= 1);
+        checkWriteAnswer(ok, q);
+      };
+    }
+    // Also allow Enter key
+    document.getElementById('writeInput')?.addEventListener('keydown', e=>{
+      if(e.key==='Enter') document.getElementById('writeSubmit')?.click();
+    }, {once:true});
+  } else {
+    if(writeArea) writeArea.style.display='none';
+    if(optGrid) optGrid.style.display='';
+    renderOptions(q.options, (btn,opt)=>answer(btn,opt,q));
+  }
+
+  clearInterval(timerInt);
+  timerInt = startTimer(q._blitz ? 8 : 15, ()=>{ if(!answered) timeout(); });
+}
+
+// ── CHAR ─────────────────────────────────────────────────
+function setChar(state){
+  document.getElementById('charSprite').innerHTML = char.svg[state] || char.svg.idle;
+  document.getElementById('charSpeech').textContent = char.speech[state] || char.speech.idle;
+}
+
+// ── ANSWER ───────────────────────────────────────────────
+function answer(btn, chosen, q){
+  if(answered) return;
+  answered=true;
+  clearInterval(timerInt);
+  playClick();
+
+  const ok = chosen === q.answer;
+
+  const gap=document.getElementById('gapSpan');
+  if(gap){
+    gap.textContent=q.answer;
+    gap.className='gap '+(ok?'correct':'wrong');
+  }
+
+  document.querySelectorAll('.opt-btn').forEach(b=>{
+    b.disabled=true;
+    if(b.textContent===q.answer) b.classList.add('ok');
+    else if(b===btn && !ok) b.classList.add('bad');
+  });
+
+  if(ok){
+    score+=10;
+    streak++;
+    playCorrect();
+    flashFeedback(S.correct);
+    setChar(streak>=3?'streak':'correct');
+    if(streak>=3){ playStreak(); showStreak(streak); }
+    const sv=document.getElementById('scoreVal');
+    if(sv){ sv.textContent=score; sv.style.transform='scale(1.2)'; setTimeout(()=>sv.style.transform='',150); }
+  } else {
+    streak=0;
+    lives--;
+    playWrong();
+    flashFeedback(S.wrong,'wrong');
+    setChar('wrong');
+
+    // SHAKE
+    document.body.classList.add('shake');
+    setTimeout(()=>document.body.classList.remove('shake'),250);
+
+    updateLives(lives);
+    if(lives === 1) setTempo(140);
+    if(lives <= 0){ setTimeout(gameOver, 1800); }
+  }
+
+  if(q._patternId) updateStats(q._patternId, ok);
+
+  document.getElementById('nextBtn').classList.add('show');
+
+  // Show explanation
+  const explEl = document.getElementById('expl');
+  if(explEl && q.expl){
+    explEl.innerHTML = q.expl + (q.contra ? '<br>' + q.contra : '');
+    explEl.classList.add('show');
+  }
+}
+
+// ── WRITE ANSWER (typed mode) ─────────────────────────────
+function checkWriteAnswer(ok, q){
+  if(answered) return;
+  answered = true;
+  clearInterval(timerInt);
+  playClick();
+
+  const reveal = document.getElementById('correctReveal');
+  if(reveal){
+    reveal.textContent = ok ? `✓ ${q.answer}` : `✗ ${q.answer}`;
+    reveal.className = 'correct-reveal ' + (ok ? 'ok' : 'bad');
+  }
+
+  const writeInput = document.getElementById('writeInput');
+  if(writeInput) writeInput.disabled = true;
+
+  const gap = document.getElementById('gapSpan');
+  if(gap){ gap.textContent=q.answer; gap.className='gap '+(ok?'correct':'wrong'); }
+
+  if(ok){
+    score+=10; streak++;
+    playCorrect();
+    flashFeedback(S.correct);
+    setChar(streak>=3?'streak':'correct');
+    if(streak>=3){ playStreak(); showStreak(streak); }
+    const sv=document.getElementById('scoreVal');
+    if(sv){ sv.textContent=score; sv.style.transform='scale(1.2)'; setTimeout(()=>sv.style.transform='',150); }
+  } else {
+    streak=0; lives--;
+    playWrong();
+    flashFeedback(S.wrong,'wrong');
+    setChar('wrong');
+    document.body.classList.add('shake');
+    setTimeout(()=>document.body.classList.remove('shake'),250);
+    updateLives(lives);
+    if(lives<=0){ setTimeout(gameOver, 1800); }
+  }
+
+  if(q._patternId) updateStats(q._patternId, ok);
+
+  const explEl = document.getElementById('expl');
+  if(explEl && q.expl){
+    explEl.innerHTML = q.expl + (q.contra ? '<br>' + q.contra : '');
+    explEl.classList.add('show');
+  }
+
+  document.getElementById('nextBtn').classList.add('show');
+}
+
+// ── TIMEOUT ──────────────────────────────────────────────
+function timeout(){
+  answered=true;
+  playTimeout();
+
+  const q = questions[qIdx];
+  const gap=document.getElementById('gapSpan');
+
+  if(gap){
+    gap.textContent=q.answer;
+    gap.className='gap wrong';
+  }
+
+  flashFeedback(S.time,'wrong');
+  setChar('wrong');
+
+  lives--;
+  updateLives(lives);
+  if(lives<=0){ setTimeout(gameOver, 1800); }
+
+  // Show explanation
+  const explEl = document.getElementById('expl');
+  if(explEl && q.expl){
+    explEl.innerHTML = q.expl + (q.contra ? '<br>' + q.contra : '');
+    explEl.classList.add('show');
+  }
+
+  document.getElementById('nextBtn').classList.add('show');
+}
+
+// ── NEXT ─────────────────────────────────────────────────
+document.addEventListener('click', e=>{
+  if(e.target.id==='nextBtn'){
+    playClick();
+    qIdx++;
+    if(qIdx>=questions.length){
+      // ROUND COMPLETE
+      clearInterval(timerInt);
+      const diagnoses = getDiagnosis();
+      const gameEl = document.getElementById('game');
+      gameEl.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+          height:100%;gap:28px;padding:40px;text-align:center;">
+          <div style="font-family:var(--pixel);font-size:1.2rem;color:var(--accent);
+            text-shadow:0 0 20px var(--accent)">ROUND CLEAR!</div>
+          <div style="font-family:var(--pixel);font-size:0.8rem;color:var(--muted)">SCORE: <span style="color:var(--accent)">${score}</span></div>
+          ${diagnoses.length ? `
+            <div style="width:100%;max-width:500px;text-align:left">
+              <div style="font-family:var(--pixel);font-size:0.55rem;color:var(--muted);margin-bottom:16px">STILL SLIPPING:</div>
+              ${diagnoses.map(d=>`
+                <div style="background:var(--surface);border:2px solid var(--border);padding:14px 16px;margin-bottom:10px">
+                  <div style="font-size:0.85rem;color:var(--accent2);margin-bottom:6px">${d.label}</div>
+                  <div style="font-size:0.8rem;color:var(--muted)">${d.tip}</div>
+                </div>
+              `).join('')}
+            </div>
+          ` : `<div style="font-size:0.9rem;color:var(--green)">Clean round. No weak patterns detected.</div>`}
+          <button style="font-family:var(--pixel);padding:14px 24px;background:var(--accent);
+            color:#000;cursor:pointer;margin-top:8px"
+            onclick="location.href='index.html'">↩ MENU</button>
+        </div>
+      `;
+    } else {
+      renderQ();
+    }
+  }
+});
+
+// ── GAME OVER ────────────────────────────────────────────
+function gameOver(){
+  clearInterval(timerInt);
+  stopTheme();
+  playGameOver();
+  const diagnoses = getDiagnosis();
+
+  const gameEl = document.getElementById('game');
+  gameEl.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+      height:100%;gap:28px;padding:40px;text-align:center;">
+      <div style="font-family:var(--pixel);font-size:1.4rem;color:var(--accent2);
+        text-shadow:0 0 20px var(--accent2)">GAME OVER</div>
+      <div style="font-family:var(--pixel);font-size:0.8rem;color:var(--muted)">SCORE: <span style="color:var(--accent)">${score}</span></div>
+      ${diagnoses.length ? `
+        <div style="width:100%;max-width:500px;text-align:left">
+          <div style="font-family:var(--pixel);font-size:0.55rem;color:var(--muted);margin-bottom:16px">WEAK SPOTS:</div>
+          ${diagnoses.map(d=>`
+            <div style="background:var(--surface);border:2px solid var(--border);padding:14px 16px;margin-bottom:10px">
+              <div style="font-size:0.85rem;color:var(--accent2);margin-bottom:6px">${d.label}</div>
+              <div style="font-size:0.8rem;color:var(--muted)">${d.tip}</div>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+      <button class="btn-accent" style="font-family:var(--pixel);padding:14px 24px;background:var(--accent);
+        color:#000;cursor:pointer;margin-top:8px"
+        onclick="location.href='index.html'">↩ PLAY AGAIN</button>
+    </div>
+  `;
+}
+
+// ── START ────────────────────────────────────────────────
+renderQ();
+</script>
+
+</body>
+</html>
