@@ -61,7 +61,7 @@ import {
   CHARS, getRound, updateStats, getDiagnosis, levenshtein, getToneSequence,
   playClick, playCorrect, playWrong,
   playStreak, playTimeout, playGameOver,
-  startTheme, stopTheme,
+  startTheme, stopTheme, setTempo,
   buildGameScreen, buildFeedbackLayer,
   flashFeedback, showStreak,
   renderOptions, setQTag,
@@ -217,7 +217,8 @@ function answer(btn, chosen, q){
     setTimeout(()=>document.body.classList.remove('shake'),250);
 
     updateLives(lives);
-    if(lives<=0){ setTimeout(gameOver, 1800); }
+    if(lives === 1) setTempo(140);
+    if(lives <= 0){ setTimeout(gameOver, 1800); }
   }
 
   if(q._patternId) updateStats(q._patternId, ok);
