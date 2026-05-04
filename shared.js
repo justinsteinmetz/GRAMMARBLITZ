@@ -5,6 +5,7 @@
 export {
   isMuted,
   toggleMute,
+  setTempo,
   playClick,
   playCorrect,
   playWrong,
