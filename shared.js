@@ -1,33 +1,20 @@
 // ── SHARED — central export surface ───────────────────────
-// This file intentionally contains NO logic.
-// It simply re-exports modules so the rest of the app
-// can import everything from one place.
+// No logic here. Re-exports only.
 
 // ── AUDIO ────────────────────────────────────────────────
 export {
   isMuted,
   toggleMute,
-
   playClick,
   playCorrect,
   playWrong,
   playStreak,
   playTimeout,
   playVictory,
-  playLifeLost,
   playGameOver,
-  playBlitzStinger,
-
-  BLITZ_STINGER_MS,
-  GAME_OVER_SOUND_MS,
-
   startTheme,
-  stopTheme,
-  startBlitzTheme,
-  stopBlitzTheme
-
+  stopTheme
 } from './audio.js';
-
 
 // ── UI ───────────────────────────────────────────────────
 export {
@@ -40,9 +27,7 @@ export {
   startTimer,
   updateLives,
   S
-
 } from './ui.js';
-
 
 // ── CONTENT / ENGINE ─────────────────────────────────────
 export {
@@ -56,5 +41,4 @@ export {
   saveSession,
   loadSession,
   getToneSequence
-
 } from './content.js';
